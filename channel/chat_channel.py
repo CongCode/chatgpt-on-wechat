@@ -11,6 +11,10 @@ from channel.channel import Channel
 from common.dequeue import Dequeue
 from common import memory
 from plugins import *
+from config import conf
+import requests
+import json
+
 
 try:
     from voice.audio_convert import any_to_wav
@@ -32,6 +36,7 @@ class ChatChannel(Channel):
         _thread = threading.Thread(target=self.consume)
         _thread.setDaemon(True)
         _thread.start()
+        self.tiqq_sky_key = conf().get("tiqq_sky_key")
 
     # 根据消息构造context，消息内容相关的触发项写在这里
     def _compose_context(self, ctype: ContextType, content, **kwargs):
@@ -178,6 +183,93 @@ class ChatChannel(Channel):
             # reply的发送步骤
             self._send_reply(context, reply)
 
+    def is_sky_message(self, text: str) -> bool:
+        return text.startswith("光遇 ")
+    
+    def get_sky_id(self, text: str):
+        if text.startswith("光遇 "):
+            return text.strip("光遇 ")
+        return None
+    
+    def get_sky_content(self, url: str) -> requests.Response:
+
+        try:
+            response = requests.get(url)
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"发送GET请求失败：{e}") from e
+        return response
+    
+    def format_sky_content(self, json_str: str) -> str:
+        result = ""
+        try:
+            josn_obj = json.loads(json_str)
+            data_obj = josn_obj["data"]
+            result += "当前身高："
+            result += str(data_obj["currentHeight"])
+
+            result += "\n最大身高："
+            result += str(data_obj["maxHeight"])
+            result += "\n最小身高："
+            result += str(data_obj["minHeight"])
+
+            result += "\n\nH值："
+            result += str(data_obj["height"])
+            result += "\n当前身高处于："
+            h_percent =  (float(data_obj["height"])+1.9999)/3.9998*100
+            result += f"{h_percent:.2f}%"
+
+            result += "\nS值："
+            result += str(data_obj["scale"])
+            result += "\n固定身高处于："
+            s_percent =  (float(data_obj["scale"])+0.1)/0.2
+            adj = ""
+            if(s_percent>0.7):
+                adj="（天生高个）"
+            elif(s_percent>0.6):
+                adj="（天生微高）"
+            elif(s_percent < 0.3):
+                adj="（天生小个）"
+            elif(s_percent < 0.4):
+                adj="（天生稍小）"
+            else:
+                adj="（天生匀称）"
+            s_percent = s_percent*100
+            result += f"{s_percent:.2f}%"+adj
+
+            adorn_obj = josn_obj["adorn"]
+            adorn_str = "\n\n装扮："
+            for key, value in adorn_obj.items():
+                adorn_str += value + " "
+            result += adorn_str
+
+            action_obj = josn_obj["action"]
+            action_str = "\n动作："
+            for key, value in action_obj.items():
+                action_str += value + " "
+            result += action_str
+        except json.JSONDecodeError as e:
+            raise Exception(f"解析json出错：{e}") from e
+        return result
+    
+    def sky_reply(self, query, context: Context = None) -> Reply:
+        try:
+            if context.type != ContextType.TEXT:
+                logger.warn(f"[sky] Unsupported message type, type={context.type}")
+                return Reply(ReplyType.TEXT, None)
+            sky_id = self.get_sky_id(query)
+            logger.debug("sky id : " + sky_id)
+            url = "https://api.t1qq.com/api/sky/sc/sg?key="+ self.tiqq_sky_key + "&cx=" + sky_id
+            response = self.get_sky_content(url)
+            reply_text = response.text
+            logger.info(f"[sky] reply={reply_text}")
+            format_text = self.format_sky_content(reply_text)
+            logger.info(f"[sky] reply={format_text}")
+            return Reply(ReplyType.TEXT, format_text)
+        except Exception as e:
+            logger.error("[sky] fetch reply error, may contain unsafe content")
+            logger.error(e)
+            return Reply(ReplyType.TEXT, "查询身高出错了！")
+
     def _generate_reply(self, context: Context, reply: Reply = Reply()) -> Reply:
         e_context = PluginManager().emit_event(
             EventContext(
@@ -190,6 +282,11 @@ class ChatChannel(Channel):
             logger.debug("[WX] ready to handle context: type={}, content={}".format(context.type, context.content))
             if context.type == ContextType.TEXT or context.type == ContextType.IMAGE_CREATE:  # 文字和图片消息
                 context["channel"] = e_context["channel"]
+
+                if context.type == ContextType.TEXT and self.is_sky_message(context.content):
+                    return self.sky_reply(context.content, context) 
+                    
+                
                 reply = super().build_reply_content(context.content, context)
             elif context.type == ContextType.VOICE:  # 语音消息
                 cmsg = context["msg"]
