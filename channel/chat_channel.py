@@ -257,13 +257,13 @@ class ChatChannel(Channel):
                 logger.warn(f"[sky] Unsupported message type, type={context.type}")
                 return Reply(ReplyType.TEXT, None)
             sky_id = self.get_sky_id(query)
-            logger.debug("sky id : " + sky_id)
+            logger.error("sky id : " + sky_id)
             url = "https://api.t1qq.com/api/sky/sc/sg?key="+ self.tiqq_sky_key + "&cx=" + sky_id
             response = self.get_sky_content(url)
             reply_text = response.text
-            logger.info(f"[sky] reply={reply_text}")
+            logger.error(f"[sky] reply={reply_text}")
             format_text = self.format_sky_content(reply_text)
-            logger.info(f"[sky] reply={format_text}")
+            logger.error(f"[sky] reply={format_text}")
             return Reply(ReplyType.TEXT, format_text)
         except Exception as e:
             logger.error("[sky] fetch reply error, may contain unsafe content")
