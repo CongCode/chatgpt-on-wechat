@@ -14,6 +14,7 @@ from plugins import *
 from config import conf
 import requests
 import json
+import re
 
 
 try:
@@ -31,12 +32,15 @@ class ChatChannel(Channel):
     futures = {}  # 记录每个session_id提交到线程池的future对象, 用于重置会话时把没执行的future取消掉，正在执行的不会被取消
     sessions = {}  # 用于控制并发，每个session_id同时只能有一个context在处理
     lock = threading.Lock()  # 用于控制对sessions的访问
+ 
 
     def __init__(self):
         _thread = threading.Thread(target=self.consume)
         _thread.setDaemon(True)
         _thread.start()
         self.tiqq_sky_key = conf().get("tiqq_sky_key")
+
+        self.compiled_pattern = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     # 根据消息构造context，消息内容相关的触发项写在这里
     def _compose_context(self, ctype: ContextType, content, **kwargs):
@@ -182,17 +186,15 @@ class ChatChannel(Channel):
 
             # reply的发送步骤
             self._send_reply(context, reply)
-
-    def is_sky_message(self, text: str) -> bool:
-        return text.startswith("光遇 ")
     
     def get_sky_id(self, text: str):
-        if text.startswith("光遇 "):
-            return text.strip("光遇 ")
-        return None
+        matches = self.compiled_pattern.findall(text)
+        if matches:
+            return matches[0]
+        else:
+            return None
     
     def get_sky_content(self, url: str) -> requests.Response:
-
         try:
             response = requests.get(url)
         except requests.exceptions.RequestException as e:
@@ -251,12 +253,11 @@ class ChatChannel(Channel):
             raise Exception(f"解析json出错：{e}") from e
         return result
     
-    def sky_reply(self, query, context: Context = None) -> Reply:
+    def sky_reply(self, sky_id, context: Context = None) -> Reply:
         try:
             if context.type != ContextType.TEXT:
                 logger.warn(f"[sky] Unsupported message type, type={context.type}")
                 return Reply(ReplyType.TEXT, None)
-            sky_id = self.get_sky_id(query)
             logger.error("sky id : " + sky_id)
             url = "https://api.t1qq.com/api/sky/sc/sg?key="+ self.tiqq_sky_key + "&cx=" + sky_id
             response = self.get_sky_content(url)
@@ -283,10 +284,11 @@ class ChatChannel(Channel):
             if context.type == ContextType.TEXT or context.type == ContextType.IMAGE_CREATE:  # 文字和图片消息
                 context["channel"] = e_context["channel"]
 
-                if context.type == ContextType.TEXT and self.is_sky_message(context.content):
-                    return self.sky_reply(context.content, context) 
-                    
-                
+                if context.type == ContextType.TEXT:
+                    uuid_str = self.get_sky_id(context.content)
+                    if uuid_str:
+                        return self.sky_reply(uuid_str, context) 
+        
                 reply = super().build_reply_content(context.content, context)
             elif context.type == ContextType.VOICE:  # 语音消息
                 cmsg = context["msg"]
